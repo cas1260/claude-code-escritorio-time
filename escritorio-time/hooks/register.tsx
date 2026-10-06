@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { Roteiro } from '../types'
-import { alturaDoQuadro, montarSvg } from './cenario'
+import { alturaDoQuadro, larguraDoQuadro, montarCena, montarFundo } from './cenario'
 import {
   ROTEIRO_INICIAL,
   aceitaInferencia,
@@ -31,19 +31,35 @@ const TITULO = 'Escritório do Time'
 // grande e linhas para o desenho mais a legenda.
 const ABERTURA = { id: PAINEL, title: TITULO, columns: 132, rows: 44 } as const
 
+// Chaves dos Clients do painel: duas camadas de agentes e a legenda.
+const CAMADA_A = 'cenaA'
+const CAMADA_B = 'cenaB'
+const LEGENDA = 'legenda'
+
+// Milissegundos em que a cena antiga continua visível numa camada depois de a
+// nova ter sido entregue à outra: a troca nunca deixa o desenho sem agentes.
+const TROCA_DE_CAMADA = 350
+
+// O texto de atividade (o balão) troca no máximo uma vez por intervalo, e
+// nunca enquanto um passo está sendo animado.
+const INTERVALO_DA_ATIVIDADE = 3000
+
 const roteiro = atom({ plugin: 'escritorio-time', key: 'roteiro' } as const, ROTEIRO_INICIAL)
 const atividade = atom({ plugin: 'escritorio-time', key: 'atividade' } as const, '')
-
-// Cada troca do texto de atividade redesenha o painel, e o app recria o
-// quadro do desenho a cada redesenho: no máximo uma troca por intervalo, e
-// nenhuma enquanto um passo está sendo animado.
-const INTERVALO_DA_ATIVIDADE = 3000
 
 let espera: Timer | undefined
 let ultimaAtividade = 0
 
+// A cena que as camadas devem mostrar agora, qual das duas camadas a recebe e
+// desde quando.
+let quadro = { chave: '', alvo: CAMADA_A, desde: 0 }
+
 function linhaDaEtapa(atual: Roteiro): string {
   return atual.etapa === 0 ? (ETAPAS[0] as string) : `Etapa ${atual.etapa}/8 · ${ETAPAS[atual.etapa] ?? ''}`
+}
+
+function medida(valor: unknown): number {
+  return typeof valor === 'number' && Number.isFinite(valor) ? valor : 0
 }
 
 // Exibe o próximo passo da fila quando a animação em cena termina.
@@ -157,39 +173,85 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('ui.render', { component: 'Pane', requestId: PAINEL }, async ($, e) => {
+  // As camadas e a legenda perguntam, a cada instante, se há algo novo para
+  // mostrar. A resposta leva os novos dados direto à camada que perguntou,
+  // sem redesenhar o painel: é isso que mantém o fundo parado.
+  on('ui.message', async ($, e) => {
+    const dado = (typeof e.data === 'object' && e.data !== null ? e.data : {}) as Readonly<Record<string, unknown>>
     const atual = await read($, roteiro)
     const texto = await read($, atividade)
-    const etapa = linhaDaEtapa(atual)
-    const resumo = legenda(atual, texto)
 
-    if (e.surface === 'terminal') {
+    if (e.element === LEGENDA) {
+      const nova = { etapa: linhaDaEtapa(atual), resumo: legenda(atual, texto) }
+
+      return dado.etapa === nova.etapa && dado.resumo === nova.resumo ? {} : { props: nova }
+    }
+
+    if (e.element !== CAMADA_A && e.element !== CAMADA_B) {
+      return {}
+    }
+
+    const agora = await $.clock.now()
+    const fala = falaDaCena(atual, texto)
+    const largura = medida(dado.largura)
+    const altura = medida(dado.altura)
+    const chave = `${atual.cena.seq}|${fala ?? ''}|${largura}x${altura}`
+
+    if (chave !== quadro.chave) {
+      quadro = { chave, alvo: quadro.alvo === CAMADA_A ? CAMADA_B : CAMADA_A, desde: agora }
+    }
+
+    if (e.element === quadro.alvo) {
+      if (dado.chave === chave) {
+        return {}
+      }
+
+      // O desenho retoma a animação do ponto em que o passo em cena está.
+      const decorrido = (agora - atual.cena.inicio) / 1000
+
+      return { props: { chave, svg: montarCena(atual.cena, decorrido, fala), largura, altura } }
+    }
+
+    // A camada com a cena antiga só é limpa depois de a nova ter aparecido.
+    const podeLimpar = dado.chave !== '' && agora - quadro.desde >= TROCA_DE_CAMADA
+
+    return podeLimpar ? { props: { chave: '', svg: '', largura, altura } } : {}
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PAINEL }, async ($, e) => {
+    if (e.surface !== 'desktop') {
+      // Sem camadas sobrepostas fora do app desktop: resumo em texto.
       const { Box, Text } = $.ui.resolve(e)
+      const atual = await read($, roteiro)
+      const resumo = legenda(atual, await read($, atividade))
 
       return (
         <Box flexDirection="column">
           <Text bold>{TITULO}</Text>
-          <Text>{etapa}</Text>
+          <Text>{linhaDaEtapa(atual)}</Text>
           {resumo !== '' && <Text dimColor>{resumo}</Text>}
         </Box>
       )
     }
 
-    const { Box, Svg, Text } = $.ui.resolve(e)
-    // O desenho retoma a animação do ponto em que o passo em cena está.
-    const decorrido = ((await $.clock.now()) - atual.cena.inicio) / 1000
-    const desenho = montarSvg(atual.cena, decorrido, falaDaCena(atual, texto))
+    // No desktop este desenho não lê estado nenhum: ele é feito uma vez (e a
+    // cada mudança de largura) e não é refeito quando a sessão anda. O fundo
+    // fica numa camada; os agentes, em duas camadas por cima que se revezam.
+    const { Box, Client, Svg } = $.ui.resolve(e)
+    const largura = larguraDoQuadro(e.props.bodyColumns)
+    const altura = alturaDoQuadro(e.props.bodyColumns)
+    const vazia = { chave: '', svg: '', largura, altura }
 
     return (
       <Box flexDirection="column">
-        <Svg
-          source={desenho}
-          alt={`${TITULO}. ${etapa}. ${resumo}`}
-          height={alturaDoQuadro(e.props.bodyColumns)}
-          isInteractive
-        />
-        <Text bold>{etapa}</Text>
-        {resumo !== '' && <Text dimColor>{resumo}</Text>}
+        <Svg source={montarFundo()} alt={TITULO} width={largura} height={altura} isInteractive />
+        <Box position="absolute" top={0} left={0} right={0} bottom={0} flexDirection="column">
+          <Client key="cenaA" module="./camada.tsx" props={vazia} width="100%" flexGrow={1} />
+        </Box>
+        <Box position="absolute" top={0} left={0} right={0} bottom={0} flexDirection="column">
+          <Client key="cenaB" module="./camada.tsx" props={vazia} width="100%" flexGrow={1} />
+        </Box>
+        <Client key="legenda" module="./legenda.tsx" props={{ etapa: ' ', resumo: ' ' }} />
       </Box>
     )
   })

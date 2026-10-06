@@ -1,7 +1,14 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import type { Cena } from '../types'
-import { LIMITE_SVG, montarSvg, quebrarFala } from '../hooks/cenario'
+import {
+  LIMITE_SVG,
+  alturaDoQuadro,
+  larguraDoQuadro,
+  montarCena,
+  montarFundo,
+  quebrarFala,
+} from '../hooks/cenario'
 import {
   ROTEIRO_INICIAL,
   agentesNomeados,
@@ -28,6 +35,9 @@ const PAINEL = {
     view: {},
   },
 } as const
+
+// Os dados de um Client chegam como props; o limite do post é 100.000.
+const LIMITE_DA_CENA = 100000
 
 test('o texto da resposta diz quem assume a demanda', () => {
   expect(agentesNomeados('**Prime (Analista Sênior):** quebrando em pacotes')).toEqual([
@@ -96,7 +106,15 @@ test('a fila junta entregas em atraso e a interrupção deixa o papel onde está
   expect(parado.fila[parado.fila.length - 1]).toEqual({ tipo: 'parada' })
 })
 
-test('toda entrega tem rota e o desenho cabe no limite do Svg', () => {
+test('o fundo e a cena são desenhos separados e cabem nos limites', () => {
+  const fundo = montarFundo()
+
+  // o fundo é só a arte original, como fundo CSS; o app remove a tag <image>
+  expect(fundo.length).toBeLessThanOrEqual(LIMITE_SVG)
+  expect(fundo).toContain('url(data:image/avif;base64,')
+  expect(fundo).not.toContain('<image')
+  expect(fundo).not.toContain('<path')
+
   // a maior fala que o balão mostra: duas linhas cheias
   const fala = `${'m'.repeat(24)} ${'m'.repeat(24)}`
 
@@ -111,16 +129,23 @@ test('toda entrega tem rota e o desenho cabe no limite do Svg', () => {
           portador: para,
           ativo: true,
         }
-        const svg = montarSvg(cena, 0, fala)
+        const desenho = montarCena(cena, 0, fala)
 
         expect(rota(de, para).length).toBeGreaterThan(1)
-        expect(svg.length).toBeLessThanOrEqual(LIMITE_SVG)
-        // a arte original vai como fundo CSS; o app remove a tag <image>
-        expect(svg).toContain('url(data:image/avif;base64,')
-        expect(svg).not.toContain('<image')
+        expect(desenho.length).toBeLessThanOrEqual(LIMITE_DA_CENA)
+        // a camada dos agentes é transparente: nada de fundo nela
+        expect(desenho).not.toContain('url(')
+        expect(desenho).not.toContain('<image')
       }
     }
   }
+})
+
+test('as camadas têm o mesmo tamanho, na proporção da arte', () => {
+  expect(larguraDoQuadro(85)).toBe(667)
+  expect(alturaDoQuadro(85)).toBe(500)
+  expect(larguraDoQuadro(1000)).toBe(1448)
+  expect(alturaDoQuadro(1000)).toBe(1086)
 })
 
 test('o desenho retoma a animação do ponto em que o passo está', () => {
@@ -134,11 +159,11 @@ test('o desenho retoma a animação do ponto em que o passo está', () => {
   }
 
   // no meio da caminhada: as animações começam no passado
-  expect(montarSvg(cena, 1.5, null)).toContain('begin="-1.5s"')
-  expect(montarSvg(cena, 1.5, null)).toContain('type="scale"')
+  expect(montarCena(cena, 1.5, null)).toContain('begin="-1.5s"')
+  expect(montarCena(cena, 1.5, null)).toContain('type="scale"')
 
   // depois que o passo acabou: sem caminhante, Prime trabalhando com o balão
-  const parado = montarSvg(cena, 60, 'lendo cenario.ts')
+  const parado = montarCena(cena, 60, 'lendo cenario.ts')
   expect(parado).not.toContain('type="scale"')
   expect(parado).toContain('fill="#101018">Prime</text>')
   expect(parado).toContain('>lendo cenario.ts</text>')
@@ -151,63 +176,79 @@ test('a fala do balão cabe em duas linhas curtas', () => {
   expect(longa).toHaveLength(2)
   expect(longa.every(linha => linha.length <= 24)).toBe(true)
   expect(longa[1]).toEndWith('…')
-  expect(montarSvg({ ...ROTEIRO_INICIAL.cena, portador: 'goku', ativo: true }, 0, 'a < b & c')).toContain(
+  expect(montarCena({ ...ROTEIRO_INICIAL.cena, portador: 'goku', ativo: true }, 0, 'a < b & c')).toContain(
     '>a &lt; b &amp; c</text>',
   )
 })
 
-test('o painel acompanha a sessão no desktop e no terminal', async ($, on) => {
+test('fora do desktop o painel é um resumo em texto', async ($, on) => {
+  mock.clock(on, { now: 1000 })
+  on('turn.start', ($$, e) => ({ turnId: e.turnId }))
+
+  const terminal = await $.ui.mount({ ...PAINEL, surface: 'terminal' })
+  expect(await terminal.find({ type: 'Text', text: 'Aguardando demanda' })).toBeDefined()
+
+  await $.turn.start({ text: 'Criar a tela de login', turnId: 't1' })
+  expect(await terminal.find({ type: 'Text', text: 'Etapa 2/8' })).toBeDefined()
+  expect(await terminal.find({ type: 'Text', text: 'Frank · Gerente de Projetos — recebendo a nova demanda' })).toBeDefined()
+
+  await terminal.unmount()
+})
+
+test('no desktop o fundo fica parado e as camadas de agentes se revezam', async ($, on) => {
   const relogio = mock.clock(on, { now: 1000 })
   on('turn.start', ($$, e) => ({ turnId: e.turnId }))
   on('tool.call', () => ({ result: {} }))
   on('turn.complete', ($$, e) => ({ text: e.answer }))
 
-  const desktop = await $.ui.mount({ ...PAINEL, surface: 'desktop' })
-  const terminal = await $.ui.mount({ ...PAINEL, surface: 'terminal' })
+  const painel = await $.ui.mount({ ...PAINEL, surface: 'desktop' })
+  const fundo = async (): Promise<unknown> => (await painel.find({ type: 'Svg' }))?.props.source
+  const camada = async (chave: string): Promise<string> =>
+    String((await painel.find({ type: 'Svg', in: chave }))?.props.source ?? '')
+  const cenas = async (): Promise<string[]> => [await camada('cenaA'), await camada('cenaB')]
+  const legenda = async (texto: string): Promise<unknown> => painel.find({ type: 'Text', text: texto, in: 'legenda' })
 
-  expect((await desktop.find({ type: 'Text', text: 'Aguardando demanda' }))?.text).toBe('Aguardando demanda')
-  expect(String((await desktop.find({ type: 'Svg' }))?.props.source)).toStartWith('<svg')
-  // 80 colunas de painel: quadro de 628 x 471 px, na proporção do escritório.
-  expect((await desktop.find({ type: 'Svg' }))?.props.height).toBe(471)
-  expect(await terminal.find({ type: 'Svg' })).toBeUndefined()
+  // o desenho do painel: fundo com a arte e 80 colunas -> quadro de 628 x 471
+  const fundoInicial = await fundo()
+  expect(String(fundoInicial)).toContain('url(data:image/avif;base64,')
+  expect((await painel.find({ type: 'Svg' }))?.props.height).toBe(471)
 
+  // as camadas perguntam ao mod e uma delas recebe a cena parada
+  await painel.advance(600)
+  expect((await cenas()).filter(desenho => desenho !== '')).toHaveLength(1)
+  expect(await legenda('Aguardando demanda')).toBeDefined()
+
+  // chega uma demanda: a cena nova vai para a OUTRA camada; a antiga continua
+  const antes = await cenas()
   await $.turn.start({ text: 'Criar a tela de login', turnId: 't1' })
-  expect(await desktop.find({ type: 'Text', text: 'Etapa 2/8' })).toBeDefined()
-  expect(await terminal.find({ type: 'Text', text: 'Etapa 2/8' })).toBeDefined()
+  await painel.advance(300)
+  const durante = await cenas()
+  expect(durante.filter(desenho => desenho !== '')).toHaveLength(2)
+  expect(durante.some(desenho => desenho !== '' && !antes.includes(desenho))).toBe(true)
 
-  // Abaixo dos plugins o kit não tem quem guarde a linha: a chamada rejeita
-  // depois de o hook do mod já ter lido o texto, que é o que se verifica aqui.
-  await $.session
-    .append({
-      message: {
-        type: 'assistant',
-        role: 'assistant',
-        content: [{ type: 'text', text: '**Prime (Analista Sênior):** quebrando em pacotes.' }],
-      },
-      door: 'response',
-      origin: { kind: 'model', model: 'teste' },
-      uuid: 'linha-1',
-    })
-    .catch(() => undefined)
-  expect(await desktop.find({ type: 'Text', text: 'Etapa 3/8' })).toBeDefined()
+  // passado o tempo de troca, a camada antiga é limpa e sobra só a nova
+  await relogio.advance(500)
+  await painel.advance(600)
+  expect((await cenas()).filter(desenho => desenho !== '')).toHaveLength(1)
+  expect(await legenda('Etapa 2/8')).toBeDefined()
 
-  // A chegada e a entrega ao Prime terminam de ser animadas.
+  // uma edição em .cs leva o papel ao Goku e o balão mostra o que ele faz
   await relogio.advance(20000)
   await $.tool.call({ tool: 'Edit', tool_use_id: 'c1', file_path: 'src/Login.cs', old_string: 'a', new_string: 'b' })
-  expect(await desktop.find({ type: 'Text', text: 'Etapa 4/8' })).toBeDefined()
-  expect(await terminal.find({ type: 'Text', text: 'Goku · C# — editando Login.cs' })).toBeDefined()
-
-  // O Prime leva o papel ao Goku, que passa a ser o destaque do desenho,
-  // com o balão dizendo o que ele está fazendo.
   await relogio.advance(20000)
-  const desenho = String((await desktop.find({ type: 'Svg' }))?.props.source)
-  expect(desenho).toContain('fill="#101018">Goku</text>')
-  expect(desenho).toContain('>editando Login.cs</text>')
+  await painel.advance(1200)
+  const depois = (await cenas()).join('')
+  expect(depois).toContain('fill="#101018">Goku</text>')
+  expect(depois).toContain('>editando Login.cs</text>')
+  expect(await legenda('Goku · C# — editando Login.cs')).toBeDefined()
 
   await $.turn.complete({ answer: 'Pronto.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
-  expect(await desktop.find({ type: 'Text', text: 'Etapa 8/8' })).toBeDefined()
-  expect(await desktop.find({ type: 'Text', text: 'Demanda entregue ao cliente' })).toBeDefined()
+  await painel.advance(1200)
+  expect(await legenda('Etapa 8/8')).toBeDefined()
+  expect(await legenda('Demanda entregue ao cliente')).toBeDefined()
 
-  await desktop.unmount()
-  await terminal.unmount()
+  // em toda a sessão o fundo foi o mesmo desenho: o painel não foi refeito
+  expect(await fundo()).toBe(fundoInicial)
+
+  await painel.unmount()
 })

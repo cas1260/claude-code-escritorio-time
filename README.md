@@ -6,10 +6,10 @@ está com a demanda leva o papel andando até a mesa do próximo responsável, e
 agente que está trabalhando aparece em frente ao computador com um balão dizendo
 o que está fazendo.
 
-![Arte de referência do escritório](docs/Escritorio.png)
+![O painel Escritório do Time dentro do Claude Code](docs/time.jpg)
 
-*Arte de referência. O painel desenha esta mesma cena, com os personagens
-animados sobre o escritório vazio.*
+*O painel em funcionamento: o Prime com a demanda e o balão dizendo o que ele
+está fazendo.*
 
 ## O que o painel mostra
 
@@ -32,7 +32,7 @@ Nada é simulado: tudo se move a partir de eventos reais da sessão.
   acesso antecipado e a API pode mudar entre versões. Feito e testado na versão
   **2.1.288**.
 - App desktop do Claude (aba Code) para ver o desenho. No terminal o painel
-  mostra apenas um resumo em texto, porque lá não existe o elemento de desenho.
+  mostra apenas um resumo em texto.
 
 ## Instalação
 
@@ -93,7 +93,9 @@ resumo) e não move o papel.
 | `escritorio-time/hooks/rotas.ts` | Os corredores por onde os personagens andam e a velocidade. |
 | `escritorio-time/hooks/diretor.ts` | As regras do fluxo (quem recebe, quando passa, quando entrega). |
 | `escritorio-time/hooks/cenario.ts` | O desenho: fundo, personagens, balão, animações. |
-| `escritorio-time/hooks/register.tsx` | Os hooks do Claude Code e o painel. |
+| `escritorio-time/hooks/register.tsx` | Os hooks do Claude Code e o painel em camadas. |
+| `escritorio-time/hooks/camada.tsx` | A camada dos agentes (mostra a cena e pergunta ao mod se há uma nova). |
+| `escritorio-time/hooks/legenda.tsx` | A legenda abaixo do desenho. |
 | `escritorio-time/arte/` | As imagens de origem: o escritório vazio e as folhas de sprites. |
 
 Depois de trocar as imagens em `arte/`, refaça os arquivos de dados
@@ -117,13 +119,27 @@ claude plugin validate escritorio-time
 claude plugin test escritorio-time
 ```
 
+## Como o painel é desenhado
+
+O app recria um desenho inteiro sempre que ele muda, e isso faria a tela piscar.
+Por isso o painel tem camadas sobrepostas:
+
+- **Fundo:** a arte do escritório, desenhada uma vez e nunca mais refeita.
+- **Agentes:** duas camadas transparentes que se revezam. A cena nova entra em
+  uma enquanto a antiga continua visível na outra; só depois a antiga é limpa.
+- **Legenda:** texto nativo, atualizado sem redesenhar o painel.
+
+As camadas perguntam ao mod, algumas vezes por segundo, se há algo novo para
+mostrar.
+
 ## Limites conhecidos
 
-- O desenho inteiro precisa caber em 131.072 caracteres; por isso o fundo é uma
-  versão comprimida da arte e os personagens têm cerca de 20 x 30 células.
-- O app recria o desenho a cada atualização. O mod retoma a animação do ponto
-  certo, mas a troca do balão pode causar uma piscada rápida; ela é limitada a
-  uma a cada 3 segundos.
+- Cada camada precisa caber em 131.072 caracteres; por isso o fundo é uma versão
+  comprimida da arte e os personagens têm cerca de 20 x 30 células.
+- O texto do balão troca no máximo uma vez a cada 3 segundos, e nunca durante
+  uma caminhada.
+- O desenho só existe no app desktop. No terminal e nas outras telas o painel
+  mostra um resumo em texto.
 - O tamanho do desenho acompanha a largura do painel. Para vê-lo maior, alargue
   o painel.
 

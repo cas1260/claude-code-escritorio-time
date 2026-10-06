@@ -54,12 +54,16 @@ function comeco(decorrido: number): string {
   return `begin="${String(-Math.round(decorrido * 100) / 100)}s"`
 }
 
-// Altura, em pixels, do quadro do desenho para um painel com estas colunas.
-// O quadro ocupa a largura do painel, mas a altura quem informa é o mod.
-export function alturaDoQuadro(colunas: number): number {
-  const largura = Math.min(FUNDO_LARGURA, Math.max(1, colunas) * PIXELS_POR_COLUNA)
+// Largura, em pixels, dos quadros do desenho para um painel com estas colunas.
+// As camadas (fundo e agentes) usam a mesma largura e altura para ficarem
+// exatamente uma sobre a outra.
+export function larguraDoQuadro(colunas: number): number {
+  return Math.max(200, Math.min(FUNDO_LARGURA, Math.floor(Math.max(1, colunas) * PIXELS_POR_COLUNA)))
+}
 
-  return Math.max(150, Math.round((largura * FUNDO_ALTURA) / FUNDO_LARGURA))
+// Altura, em pixels, dos quadros: a proporção da arte para a largura acima.
+export function alturaDoQuadro(colunas: number): number {
+  return Math.round((larguraDoQuadro(colunas) * FUNDO_ALTURA) / FUNDO_LARGURA)
 }
 
 // animateTransform discreto: vale `dentro` nos intervalos (em segundos) e
@@ -403,7 +407,24 @@ function caminhante(id: IdAgente, ida: readonly Ponto[], tempos: Tempos, duracao
   )
 }
 
-function montar(cena: Cena, decorrido: number, fala: string | null, comImagem: boolean): string {
+const RAIZ =
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${FUNDO_LARGURA} ${FUNDO_ALTURA}" ` +
+  `width="${FUNDO_LARGURA}" height="${FUNDO_ALTURA}"`
+
+// A camada de fundo: só a arte original, que entra como fundo CSS do <svg>
+// (o app remove a tag <image>, mas aceita imagem em CSS). `contain` e `center`
+// encaixam a imagem do mesmo jeito que o viewBox encaixa o desenho das outras
+// camadas. Não depende de nada: é desenhada uma vez e não muda.
+export function montarFundo(): string {
+  return `${RAIZ} style="background:${FUNDO_COR} url(${FUNDO_IMAGEM}) center/contain no-repeat"></svg>`
+}
+
+// A camada dos agentes para a cena, em desenho transparente. `decorrido` são
+// os segundos desde que o passo em cena começou: o desenho retoma a animação
+// daquele ponto e, se ela já acabou, mostra o estado final. `fala` é o texto
+// do balão de quem trabalha.
+export function montarCena(cena: Cena, tempo: number, fala: string | null): string {
+  const decorrido = Math.max(0, tempo)
   const passo = cena.passo
   const inicio = comeco(decorrido)
   const personagens: string[] = []
@@ -483,25 +504,9 @@ function montar(cena: Cena, decorrido: number, fala: string | null, comImagem: b
           true,
           inicio,
         )
-  // A arte original entra como fundo CSS do <svg>: o app remove a tag <image>,
-  // mas aceita imagem em CSS. `contain` e `center` encaixam a imagem do mesmo
-  // jeito que o viewBox encaixa o desenho, então os dois ficam alinhados.
-  const imagem = comImagem ? ` url(${FUNDO_IMAGEM}) center/contain no-repeat` : ''
 
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${FUNDO_LARGURA} ${FUNDO_ALTURA}" ` +
-    `width="${FUNDO_LARGURA}" height="${FUNDO_ALTURA}" style="background:${FUNDO_COR}${imagem}">` +
-    `<g fill="none" stroke-width="1.06">${personagens.join('')}${andando}</g>` +
+    `${RAIZ}><g fill="none" stroke-width="1.06">${personagens.join('')}${andando}</g>` +
     `${camadas.join('')}${etiquetas()}${destaque}</svg>`
   )
-}
-
-// O escritório em SVG para a cena. `decorrido` são os segundos desde que o
-// passo em cena começou: o desenho retoma a animação daquele ponto e, se ela
-// já acabou, mostra o estado final. `fala` é o texto do balão de quem trabalha.
-export function montarSvg(cena: Cena, decorrido: number, fala: string | null): string {
-  const tempo = Math.max(0, decorrido)
-  const completo = montar(cena, tempo, fala, true)
-
-  return completo.length <= LIMITE_SVG ? completo : montar(cena, tempo, fala, false)
 }

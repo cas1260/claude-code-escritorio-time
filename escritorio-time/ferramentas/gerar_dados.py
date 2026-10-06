@@ -22,12 +22,12 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
-# O elemento Svg aceita 131.072 caracteres no total; o fundo fica com esta
-# parte e o resto é dos personagens, etiquetas e animações.
-LIMITE_FUNDO = 92000
+# Um elemento Svg aceita 131.072 caracteres. O fundo é um desenho só dele
+# (camada que nunca é redesenhada), então a imagem fica com quase tudo.
+LIMITE_FUNDO = 130000
 
-# Largura, em pixels, da imagem de fundo embutida.
-LARGURA_FUNDO = 1200
+# Largura, em pixels, da imagem de fundo embutida (a da arte original).
+LARGURA_FUNDO = 1448
 
 CORES_SPRITE = 10
 
