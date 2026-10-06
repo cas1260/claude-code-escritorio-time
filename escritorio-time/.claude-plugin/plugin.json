@@ -1,0 +1,7 @@
+{
+  "name": "escritorio-time",
+  "version": "0.1.0",
+  "description": "Painel com o escritório do time em pixel art, animando o fluxo real da demanda entre os agentes.",
+  "author": { "name": "Cleber Soares" },
+  "types": "./types/index.d.ts"
+}

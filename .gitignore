@@ -1,0 +1,17 @@
+# Registros locais de trabalho
+checklist.txt
+docs/memoria-*.md
+
+# Fundo vetorial de 11 MB: não é usado pelo mod
+docs/Escritorio-vazio_vector.svg
+
+# As imagens que o gerador lê já estão em escritorio-time/arte
+docs/Escritorio-vazio.png
+docs/sprite1.png
+docs/sprite2.png
+docs/sprite3.png
+docs/sprite4.png
+
+# Gerados pelo Claude Code ao carregar o mod
+escritorio-time/.claude-plugin/types/
+escritorio-time/tsconfig.json
