@@ -606,6 +606,14 @@ const RAIZ =
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${FUNDO_LARGURA} ${FUNDO_ALTURA}" ` +
   `width="${FUNDO_LARGURA}" height="${FUNDO_ALTURA}"`
 
+// O começo de uma camada transparente. Cada camada fica num quadro próprio do
+// app, e o documento de um quadro é, por padrão, de esquema de cores claro.
+// No tema escuro o app é `color-scheme: dark`; com os dois esquemas
+// diferentes o navegador pinta o quadro de branco opaco, e a camada esconde o
+// escritório. Declarar que o desenho serve aos dois esquemas faz o documento
+// acompanhar o app, e o quadro volta a ser transparente.
+const CAMADA = `${RAIZ}><style>:root{color-scheme:light dark}</style>`
+
 // A camada de fundo: só a arte original, que entra como fundo CSS do <svg>
 // (o app remove a tag <image>, mas aceita imagem em CSS). `contain` e `center`
 // encaixam a imagem do mesmo jeito que o viewBox encaixa o desenho das outras
@@ -709,7 +717,7 @@ export function montarCena(cena: Cena, tempo: number, vida: Vida, tempoDaVida: n
   }
 
   return (
-    `${RAIZ}><g fill="none" stroke-width="1.06">${personagens.join('')}${andando}</g>` +
+    `${CAMADA}<g fill="none" stroke-width="1.06">${personagens.join('')}${andando}</g>` +
     `${camadas.join('')}${etiquetas()}</svg>`
   )
 }
@@ -730,7 +738,7 @@ export function montarVida(vida: Vida, tempoDaVida: number): string {
     .filter(rotina => rotina.tipo === 'conversa' && rotina.alcance >= 1 && rotina.permanencia > 0)
     .map(rotina => respostaDoColega(rotina, duracao, inicio))
 
-  return `${RAIZ}><g fill="none" stroke-width="1.06">${passeando.join('')}</g>${respostas.join('')}</svg>`
+  return `${CAMADA}<g fill="none" stroke-width="1.06">${passeando.join('')}</g>${respostas.join('')}</svg>`
 }
 
 // A camada do balão: o destaque de quem trabalha e o que ele está fazendo, em
@@ -750,5 +758,5 @@ export function montarFala(cena: Cena, tempo: number, fala: string | null, vida:
   const aparece = falta > 0 ? Math.max(desde, decorrido + falta) : desde
   const destaque = etiquetaDeDestaque(quem) + (fala === null ? balaoDePontos(quem) : balaoDeFala(quem, fala))
 
-  return `${RAIZ}>${janela(destaque, [[aparece, SEMPRE]], Math.max(aparece, decorrido) + 1, true, comeco(decorrido))}</svg>`
+  return `${CAMADA}${janela(destaque, [[aparece, SEMPRE]], Math.max(aparece, decorrido) + 1, true, comeco(decorrido))}</svg>`
 }

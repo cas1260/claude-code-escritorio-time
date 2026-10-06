@@ -163,6 +163,10 @@ está andando.
 As camadas perguntam ao mod, algumas vezes por segundo, se há algo novo para
 mostrar.
 
+Cada camada transparente declara que serve ao tema claro e ao escuro
+(`color-scheme: light dark`). Sem isso, no tema escuro do app o quadro de cada
+camada seria pintado de branco opaco e esconderia o escritório.
+
 ## Limites conhecidos
 
 - Cada camada precisa caber em 131.072 caracteres; por isso o fundo é uma versão

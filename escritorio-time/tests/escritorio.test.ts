@@ -152,6 +152,24 @@ test('o fundo e a cena são desenhos separados e cabem nos limites', () => {
   }
 })
 
+test('as camadas transparentes acompanham o tema do app', () => {
+  // cada camada fica num quadro próprio; sem esta declaração, no tema escuro
+  // o quadro é pintado de branco opaco e a camada esconde o escritório
+  const esquema = '<style>:root{color-scheme:light dark}</style>'
+  const cena: Cena = { ...ROTEIRO_INICIAL.cena, portador: 'goku', ativo: true }
+  const cafe: Rotina = { agente: 'mio', tipo: 'cafe', destino: 'cafe1', atraso: 2, ida: 5, permanencia: 10, alcance: 1 }
+  const vida: Vida = { seq: 1, inicio: 0, rotinas: [cafe] }
+  const camadas = [montarCena(cena, 0, vida, 5), montarVida(vida, 5), montarFala(cena, 0, 'editando Pedido.cs', vida, 5)]
+
+  for (const camada of camadas) {
+    expect(camada.startsWith('<svg ')).toBe(true)
+    expect(camada.includes(esquema)).toBe(true)
+  }
+
+  // o fundo pinta a própria imagem no quadro inteiro e não depende disso
+  expect(montarFundo().includes('<style')).toBe(false)
+})
+
 test('as camadas têm o mesmo tamanho, na proporção da arte', () => {
   expect(larguraDoQuadro(85)).toBe(667)
   expect(alturaDoQuadro(85)).toBe(500)
