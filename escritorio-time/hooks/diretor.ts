@@ -1,6 +1,6 @@
-import type { IdAgente, Passo, Roteiro } from '../types'
+import type { IdAgente, Passo, Rotina, Roteiro, TipoDeRotina, Vida } from '../types'
 import { AGENTES, IDS, rotulo } from './equipe'
-import { duracaoDoPasso } from './rotas'
+import { LUGARES, duracaoDoPasso, fimDaRotina, tempoDoPasseio } from './rotas'
 
 export type Nomeado = { id: IdAgente; emRevisao: boolean }
 
@@ -11,6 +11,33 @@ export const ROTEIRO_INICIAL: Roteiro = {
   etapa: 0,
   houveExecucao: false,
 }
+
+export const VIDA_INICIAL: Vida = { seq: 0, inicio: 0, rotinas: [] }
+
+type Faixa = readonly [number, number]
+
+// Quantos agentes saem da cadeira em cada período, no máximo.
+const ROTINAS_POR_PERIODO = 4
+
+// Segundos entre a saída de um agente e a do seguinte.
+const ENTRE_SAIDAS: Faixa = [2, 6]
+
+// Chamado de volta com menos do que isto de caminhada (em segundos), o agente
+// nem chega a sair da cadeira.
+const SAIDA_MINIMA = 0.4
+
+// O que faz quem não está com a demanda: o peso de cada escolha no sorteio e
+// os segundos que o agente fica no destino.
+const ROTINAS: readonly { tipo: TipoDeRotina; peso: number; permanencia: Faixa }[] = [
+  { tipo: 'cafe', peso: 35, permanencia: [7, 12] },
+  { tipo: 'conversa', peso: 30, permanencia: [8, 14] },
+  { tipo: 'descontracao', peso: 20, permanencia: [10, 18] },
+  { tipo: 'cochilo', peso: 15, permanencia: [14, 24] },
+]
+
+// O desenho sentado destes agentes mostra as costas (eles trabalham de costas
+// para quem olha); num sofá ficariam virados para a parede.
+const SENTAM_DE_COSTAS: readonly IdAgente[] = ['tiquinho', 'soares']
 
 // Entregas que podem esperar na fila; além disso as duas últimas viram uma só,
 // para a animação não ficar para trás do que a sessão está fazendo.
@@ -280,4 +307,186 @@ export function falaDaCena(roteiro: Roteiro, atividade: string): string | null {
   return cena.ativo && cena.portador !== null && cena.portador === roteiro.portador && atividade !== ''
     ? atividade
     : null
+}
+
+// Sorteio que se repete para a mesma semente: o mesmo instante combina o
+// mesmo período.
+function sorteador(semente: number): () => number {
+  let estado = semente >>> 0
+
+  return () => {
+    estado = (estado + 0x6d2b79f5) >>> 0
+    let valor = Math.imul(estado ^ (estado >>> 15), estado | 1)
+    valor ^= valor + Math.imul(valor ^ (valor >>> 7), valor | 61)
+
+    return ((valor ^ (valor >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+function entre(sorteio: () => number, [minimo, maximo]: Faixa): number {
+  return Math.round((minimo + sorteio() * (maximo - minimo)) * 10) / 10
+}
+
+function embaralhar<T>(itens: readonly T[], sorteio: () => number): T[] {
+  const copia = [...itens]
+
+  for (let i = copia.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(sorteio() * (i + 1))
+    const guardado = copia[i] as T
+    copia[i] = copia[j] as T
+    copia[j] = guardado
+  }
+
+  return copia
+}
+
+// As rotinas na ordem em que o agente vai tentá-las: a sorteada pelo peso e,
+// se não houver lugar para ela, as outras.
+function ordemDeTentativa(sorteio: () => number): typeof ROTINAS {
+  let alvo = sorteio() * ROTINAS.reduce((soma, rotina) => soma + rotina.peso, 0)
+
+  for (const rotina of ROTINAS) {
+    alvo -= rotina.peso
+
+    if (alvo < 0) {
+      return [rotina, ...ROTINAS.filter(outra => outra !== rotina)]
+    }
+  }
+
+  return ROTINAS
+}
+
+// Escolhe o destino da rotina e o tira dos disponíveis; undefined sem vaga.
+function destinoDaRotina(
+  agente: IdAgente,
+  tipo: TipoDeRotina,
+  lugares: Set<string>,
+  colegas: IdAgente[],
+  sorteio: () => number,
+): string | undefined {
+  if (tipo === 'conversa') {
+    return colegas.shift()
+  }
+
+  const vagas = [...lugares].filter(nome => {
+    const lugar = LUGARES[nome]
+
+    return lugar?.uso === tipo && (lugar.pose !== 'sentado' || !SENTAM_DE_COSTAS.includes(agente))
+  })
+  // Onde já há alguém esperando companhia, o agente vai fazer companhia.
+  const comCompanhia = vagas.find(nome => {
+    const par = LUGARES[nome]?.par
+
+    return par !== undefined && !lugares.has(par)
+  })
+  const escolhido = comCompanhia ?? vagas[Math.floor(sorteio() * vagas.length)]
+
+  if (escolhido !== undefined) {
+    lugares.delete(escolhido)
+  }
+
+  return escolhido
+}
+
+// Quem está envolvido com a demanda neste instante e não sai da cadeira: quem
+// está com o papel, quem o está levando e quem vai recebê-lo.
+export function envolvidos(roteiro: Roteiro, agora: number): IdAgente[] {
+  const emCena = emAnimacao(roteiro, agora) && roteiro.cena.passo !== null ? [roteiro.cena.passo] : []
+  const ids = new Set<IdAgente>()
+
+  for (const id of [roteiro.portador, roteiro.cena.portador]) {
+    if (id !== null) {
+      ids.add(id)
+    }
+  }
+
+  for (const passo of [...emCena, ...roteiro.fila]) {
+    if (passo.tipo === 'entrega') {
+      ids.add(passo.de)
+      ids.add(passo.para)
+    } else if (passo.tipo !== 'parada') {
+      ids.add('frank')
+    }
+  }
+
+  return [...ids]
+}
+
+// Combina o próximo período da vida do escritório: quem sai da cadeira, para
+// onde e quando. Só passeia quem não está em `ocupados`.
+export function planejarVida(anterior: Vida, agora: number, ocupados: readonly IdAgente[]): Vida {
+  const sorteio = sorteador(agora + anterior.seq * 7919)
+  const livres = embaralhar(
+    IDS.filter(id => !ocupados.includes(id)),
+    sorteio,
+  )
+  const colegas = livres.slice(ROTINAS_POR_PERIODO)
+  const lugares = new Set(Object.keys(LUGARES))
+  const rotinas: Rotina[] = []
+  let atraso = 0
+
+  for (const agente of livres.slice(0, ROTINAS_POR_PERIODO)) {
+    for (const { tipo, permanencia } of ordemDeTentativa(sorteio)) {
+      const destino = destinoDaRotina(agente, tipo, lugares, colegas, sorteio)
+
+      if (destino !== undefined) {
+        atraso = Math.round((atraso + entre(sorteio, ENTRE_SAIDAS)) * 10) / 10
+        rotinas.push({
+          agente,
+          tipo,
+          destino,
+          atraso,
+          ida: tempoDoPasseio(agente, tipo, destino),
+          permanencia: entre(sorteio, permanencia),
+          alcance: 1,
+        })
+        break
+      }
+    }
+  }
+
+  return { seq: anterior.seq + 1, inicio: agora, rotinas }
+}
+
+// O instante (em milissegundos) em que o período termina: todos de volta.
+export function fimDaVida(vida: Vida): number {
+  return vida.inicio + Math.max(0, ...vida.rotinas.map(fimDaRotina)) * 1000
+}
+
+// O instante em que o agente chega de volta à cadeira; 0 se ele não saiu.
+export function voltaDe(vida: Vida, id: IdAgente): number {
+  const rotina = vida.rotinas.find(uma => uma.agente === id)
+
+  return rotina === undefined ? 0 : vida.inicio + fimDaRotina(rotina) * 1000
+}
+
+// Chama de volta quem saiu e passou a ser necessário: o próprio agente, ou
+// quem está de conversa na mesa de um colega chamado. Quem ainda não saiu
+// fica; quem está a caminho dá meia-volta; quem já chegou volta agora.
+export function recolher(vida: Vida, chamados: readonly IdAgente[], agora: number): Vida {
+  const tempo = (agora - vida.inicio) / 1000
+  const rotinas: Rotina[] = []
+  let mudou = false
+
+  for (const rotina of vida.rotinas) {
+    const andado = tempo - rotina.atraso
+    const chamado =
+      chamados.includes(rotina.agente) ||
+      (rotina.tipo === 'conversa' && chamados.includes(rotina.destino as IdAgente))
+
+    if (!chamado || andado >= rotina.ida + rotina.permanencia) {
+      rotinas.push(rotina)
+    } else {
+      mudou = true
+
+      if (andado >= rotina.ida) {
+        rotinas.push({ ...rotina, permanencia: Math.round((andado - rotina.ida) * 100) / 100 })
+      } else if (andado >= SAIDA_MINIMA) {
+        const ida = Math.round(andado * 100) / 100
+        rotinas.push({ ...rotina, ida, permanencia: 0, alcance: (rotina.alcance * ida) / rotina.ida })
+      }
+    }
+  }
+
+  return mudou ? { ...vida, seq: vida.seq + 1, rotinas } : vida
 }

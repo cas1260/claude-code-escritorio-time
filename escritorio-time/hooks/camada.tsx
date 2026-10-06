@@ -12,9 +12,9 @@ const PASSO = 250
 const CALMA_APOS = 40
 const RITMO_CALMO = 4
 
-// Camada de agentes: mostra o desenho que recebeu e pergunta ao mod se há um
-// mais novo. O mod responde com novos dados sem redesenhar o painel, então o
-// fundo (outra camada) nunca é refeito.
+// Camada sobre o fundo (agentes, passeios ou balão): mostra o desenho que
+// recebeu e pergunta ao mod se há um mais novo. O mod responde com novos dados
+// sem redesenhar o painel, então o fundo (outra camada) nunca é refeito.
 const Camada: ClientModule<Props, Estado> = (props, surface) => {
   const { Box } = surface.elements
   const atual = surface.state

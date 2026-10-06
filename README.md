@@ -21,8 +21,14 @@ está fazendo.*
 - **Entrega:** ao fim do turno o papel volta à recepção, aparece um selo verde e
   o papel sai.
 - **Legenda:** abaixo do desenho ficam a etapa do fluxo (1 a 8) e a atividade atual.
+- **Vida no escritório:** quem não está com a demanda não fica parado na
+  cadeira. Os agentes vão tomar café, conversam na mesa de um colega, jogam
+  pebolim ou sentam no sofá da área de descontração e cochilam nos sofás.
+  Quando a demanda chega para alguém que saiu, ele volta para a mesa.
 
-Nada é simulado: tudo se move a partir de eventos reais da sessão.
+O caminho da demanda não é simulado: o papel só anda a partir de eventos reais
+da sessão. Os passeios de quem está sem demanda são decoração, sorteados pelo
+mod, e nunca envolvem quem está com o papel.
 
 ![Fluxo do time](docs/fluxo.png)
 
@@ -67,6 +73,19 @@ O painel abre no início da sessão. Para abrir de novo, digite `/escritorio`.
 > recomendado: na versão testada, o módulo de hooks de um plugin instalado só
 > carrega se o recurso estiver liberado para a conta.
 
+## O time vai junto
+
+Não é preciso copiar nada para o seu `CLAUDE.md`. Enquanto o mod está
+carregado, ele acrescenta às instruções de toda sessão a descrição do time: os
+17 agentes e seus papéis, o fluxo de uma demanda e a forma de dizer quem está
+atuando (`**Prime (Analista de Sistemas Sênior):** ...`). Com isso o Claude
+trabalha como o time e o painel acompanha a demanda de mesa em mesa.
+
+O texto completo, e como trocar ou desligar o time, está em [TIME.md](TIME.md).
+Vale saber: essa descrição tem cerca de 2.900 caracteres (menos de mil tokens
+em cada conversa) e muda o jeito de o Claude responder em todos os projetos em
+que o mod estiver carregado.
+
 ## Como o mod sabe quem está com a demanda
 
 | Evento da sessão | O que acontece no escritório |
@@ -90,11 +109,12 @@ resumo) e não move o papel.
 | Arquivo | O que tem |
 | --- | --- |
 | `escritorio-time/hooks/equipe.ts` | Os agentes: nome, papel, nomes aceitos no texto, extensões, posição da mesa. |
-| `escritorio-time/hooks/rotas.ts` | Os corredores por onde os personagens andam e a velocidade. |
-| `escritorio-time/hooks/diretor.ts` | As regras do fluxo (quem recebe, quando passa, quando entrega). |
-| `escritorio-time/hooks/cenario.ts` | O desenho: fundo, personagens, balão, animações. |
+| `escritorio-time/hooks/time.ts` | A descrição do time que o mod acrescenta às instruções da sessão. |
+| `escritorio-time/hooks/rotas.ts` | Os corredores por onde os personagens andam, a velocidade e os lugares de quem está sem demanda (café, sofás, pebolim). |
+| `escritorio-time/hooks/diretor.ts` | As regras do fluxo (quem recebe, quando passa, quando entrega) e as rotinas de quem está sem demanda (o que fazem, por quanto tempo, quem é chamado de volta). |
+| `escritorio-time/hooks/cenario.ts` | O desenho: fundo, personagens, passeios, balão, animações. |
 | `escritorio-time/hooks/register.tsx` | Os hooks do Claude Code e o painel em camadas. |
-| `escritorio-time/hooks/camada.tsx` | A camada dos agentes (mostra a cena e pergunta ao mod se há uma nova). |
+| `escritorio-time/hooks/camada.tsx` | Uma camada sobre o fundo (mostra o desenho e pergunta ao mod se há um novo). |
 | `escritorio-time/hooks/legenda.tsx` | A legenda abaixo do desenho. |
 | `escritorio-time/arte/` | As imagens de origem: o escritório vazio e as folhas de sprites. |
 
@@ -125,9 +145,20 @@ O app recria um desenho inteiro sempre que ele muda, e isso faria a tela piscar.
 Por isso o painel tem camadas sobrepostas:
 
 - **Fundo:** a arte do escritório, desenhada uma vez e nunca mais refeita.
-- **Agentes:** duas camadas transparentes que se revezam. A cena nova entra em
-  uma enquanto a antiga continua visível na outra; só depois a antiga é limpa.
+- **Agentes nas mesas:** os 17 agentes, o papel e quem o leva de uma mesa a
+  outra. É refeita quando a demanda muda de mãos e quando começa um período
+  de rotinas (a cadeira de quem sai fica vazia).
+- **Passeios:** quem está sem demanda andando pelo escritório. É refeita
+  quando um novo período de rotinas começa ou alguém é chamado de volta.
+- **Balão:** o destaque de quem trabalha e o que ele está fazendo. É refeita
+  quando o texto muda.
 - **Legenda:** texto nativo, atualizado sem redesenhar o painel.
+
+Cada uma das três camadas do meio é, na verdade, um par de camadas
+transparentes que se revezam: o desenho novo entra em uma enquanto o antigo
+continua visível na outra; só depois o antigo é limpo. E como cada par só é
+refeito quando o conteúdo dele muda, trocar o texto do balão não mexe em quem
+está andando.
 
 As camadas perguntam ao mod, algumas vezes por segundo, se há algo novo para
 mostrar.
@@ -137,7 +168,10 @@ mostrar.
 - Cada camada precisa caber em 131.072 caracteres; por isso o fundo é uma versão
   comprimida da arte e os personagens têm cerca de 20 x 30 células.
 - O texto do balão troca no máximo uma vez a cada 3 segundos, e nunca durante
-  uma caminhada.
+  a caminhada de quem leva o papel.
+- Em cada período de rotinas saem da cadeira no máximo 4 agentes, um depois do
+  outro. Os personagens andam por cima da arte: ao passar por um móvel, quem
+  anda aparece na frente dele.
 - O desenho só existe no app desktop. No terminal e nas outras telas o painel
   mostra um resumo em texto.
 - O tamanho do desenho acompanha a largura do painel. Para vê-lo maior, alargue

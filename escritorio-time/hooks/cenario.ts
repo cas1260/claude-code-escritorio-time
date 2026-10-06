@@ -1,11 +1,20 @@
-import type { Cena, IdAgente } from '../types'
+import type { Cena, IdAgente, Rotina, Vida } from '../types'
 import { FUNDO_ALTURA, FUNDO_COR, FUNDO_IMAGEM, FUNDO_LARGURA } from './dados-fundo'
 import { SPRITES } from './dados-sprites'
 import type { Quadro } from './dados-sprites'
 import { AGENTES, IDS } from './equipe'
 import type { Ponto } from './equipe'
-import { TEMPO_CHEGADA, TEMPO_SAIDA, comprimento, rota, temposDaEntrega } from './rotas'
-import type { Tempos } from './rotas'
+import {
+  LUGARES,
+  TEMPO_CHEGADA,
+  TEMPO_SAIDA,
+  comprimento,
+  fimDaRotina,
+  rota,
+  temposDaEntrega,
+  trajetoDaRotina,
+} from './rotas'
+import type { Pose, Tempos } from './rotas'
 
 // O elemento Svg aceita no máximo este número de caracteres.
 export const LIMITE_SVG = 131072
@@ -38,6 +47,29 @@ const PAPEL =
 const SELO_ENTREGUE =
   '<circle r="15" fill="#2ecc71" stroke="#fff" stroke-width="3"/>' +
   '<path d="M-7 0l5 6l9 -11" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>'
+
+// O que acompanha quem passeia sem demanda: a xícara de café, o balãozinho de
+// conversa, a nota de música de quem relaxa e o "Zzz" de quem cochila.
+const XICARA =
+  '<path d="M-6 -5h12v6a4 4 0 0 1 -4 4h-4a4 4 0 0 1 -4 -4z" fill="#fff" stroke="#22223b" stroke-width="2"/>' +
+  '<path d="M6 -3h4v4h-4" fill="none" stroke="#22223b" stroke-width="2"/>' +
+  '<path d="M-4 -3h8" stroke="#7b4a2b" stroke-width="2"/>' +
+  '<g><animateTransform attributeName="transform" type="translate" values="0 0;0 -3" keyTimes="0;.5" ' +
+  'calcMode="discrete" dur="1s" repeatCount="indefinite"/>' +
+  '<path d="M-2 -8q-3 -3 0 -6M3 -8q-3 -3 0 -6" fill="none" stroke="#fff" stroke-width="1.8"/></g>'
+
+const BALAO_DE_CONVERSA =
+  '<path d="M8 20l-5 9l13 -9z" fill="#fff" stroke="#22223b" stroke-width="2"/>' +
+  '<rect width="40" height="22" rx="7" fill="#fff" stroke="#22223b" stroke-width="2"/>' +
+  '<path d="M10 11h.1M20 11h.1M30 11h.1" stroke="#22223b" stroke-width="6" stroke-linecap="round"/>'
+
+const NOTA_DE_MUSICA =
+  '<g><animateTransform attributeName="transform" type="translate" values="0 0;4 -5" keyTimes="0;.5" ' +
+  'calcMode="discrete" dur="1.2s" repeatCount="indefinite"/>' +
+  '<path d="M3 9v-14l10 -3v14" fill="none" stroke="#22223b" stroke-width="5" stroke-linejoin="round"/>' +
+  '<path d="M3 9v-14l10 -3v14" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>' +
+  '<circle cx="0" cy="9" r="4.5" fill="#fff" stroke="#22223b" stroke-width="1.5"/>' +
+  '<circle cx="10" cy="6" r="4.5" fill="#fff" stroke="#22223b" stroke-width="1.5"/></g>'
 
 function n(valor: number): string {
   return String(Math.round(valor * 10) / 10)
@@ -287,6 +319,42 @@ function balaoDePontos(id: IdAgente): string {
   )
 }
 
+// Balãozinho de quem conversa: aparece na `vez` dele (0 ou 1) de cada ciclo.
+// O espelho fica por dentro de tudo: um espelho entre dois deslocamentos para
+// fora do desenho traria o balão de volta.
+function balaoDeConversa(vez: number, espelhado: boolean): string {
+  const valores = vez === 0 ? `${DENTRO};${FORA}` : `${FORA};${DENTRO}`
+  const balao = espelhado ? `<g transform="scale(-1 1)">${BALAO_DE_CONVERSA}</g>` : BALAO_DE_CONVERSA
+
+  return (
+    `<g><animateTransform attributeName="transform" type="translate" values="${valores}" keyTimes="0;.5" ` +
+    `calcMode="discrete" dur="3.2s" repeatCount="indefinite"/>${balao}</g>`
+  )
+}
+
+// O "Zzz" de quem cochila: as letras aparecem uma depois da outra.
+function sono(): string {
+  const letras = [0, 1, 2]
+    .map(i => {
+      const atributos = `x="${i * 10}" y="${-i * 13}" font-size="${14 + i * 5}"`
+      const letra =
+        `<text ${atributos} fill="none" stroke="#22223b" stroke-width="4" stroke-linejoin="round">z</text>` +
+        `<text ${atributos} fill="#fff">z</text>`
+
+      if (i === 0) {
+        return letra
+      }
+
+      return (
+        `<g><animateTransform attributeName="transform" type="translate" values="${FORA};${DENTRO}" ` +
+        `keyTimes="0;${fracao(i / 3)}" calcMode="discrete" dur="2.4s" repeatCount="indefinite"/>${letra}</g>`
+      )
+    })
+    .join('')
+
+  return `<g font-family="monospace" font-weight="bold">${letras}</g>`
+}
+
 function papelEm(ponto: Ponto): string {
   return `<g transform="translate(${n(ponto[0])} ${n(ponto[1])})">${PAPEL}</g>`
 }
@@ -313,10 +381,32 @@ function papelDeslizando(pontos: readonly Ponto[], segundos: number, inicio: str
   )
 }
 
-// Quem leva o papel: anda de `ida[0]` até o fim de `ida`, entrega e volta.
-function caminhante(id: IdAgente, ida: readonly Ponto[], tempos: Tempos, duracao: number, inicio: string): string {
+// Um passeio de ida e volta: o agente sai de `ida[0]` aos `desde` segundos da
+// linha do tempo, anda até o fim de `ida`, fica parado e volta.
+type Passeio = {
+  id: IdAgente
+  ida: readonly Ponto[]
+  tempos: Tempos
+  desde: number
+  // A duração da linha do tempo e quanto dela já passou, em segundos.
+  duracao: number
+  decorrido: number
+  // A pose em que fica parado (`espelhado` vira a de lado para a direita) e o
+  // que aparece junto dele enquanto está lá.
+  parada: Pose
+  espelhado: boolean
+  naParada: string
+  // O que leva na mão, e de quando até quando (segundos desde a saída).
+  naMao: string
+  comNaMao: Intervalo
+}
+
+// Quem anda pelo escritório: leva o papel de uma mesa a outra ou passeia.
+function caminhante(passeio: Passeio): string {
+  const { id, ida, tempos, desde, duracao } = passeio
+  const inicio = comeco(passeio.decorrido)
   const poses = SPRITES[id]
-  const extensao = comprimento(ida)
+  const extensao = comprimento(ida) || 1
   const pontos: Ponto[] = []
   const instantes: number[] = []
   const deLado: Intervalo[] = []
@@ -357,9 +447,19 @@ function caminhante(id: IdAgente, ida: readonly Ponto[], tempos: Tempos, duracao
   }
 
   const retorno = tempos.ida + tempos.pausa
-  deFrente.push([tempos.ida, retorno])
-  pontos.push(ida[ida.length - 1] as Ponto)
-  instantes.push(retorno)
+  const parado: Intervalo = [tempos.ida, retorno]
+
+  if (tempos.pausa > 0) {
+    if (passeio.parada === 'frente') {
+      deFrente.push(parado)
+    } else if (passeio.parada === 'costas') {
+      deCostas.push(parado)
+    }
+
+    pontos.push(ida[ida.length - 1] as Ponto)
+    instantes.push(retorno)
+  }
+
   andado = 0
 
   for (let i = ida.length - 1; i > 0; i -= 1) {
@@ -373,38 +473,133 @@ function caminhante(id: IdAgente, ida: readonly Ponto[], tempos: Tempos, duracao
     instantes.push(ate)
   }
 
-  const ordenar = (intervalos: Intervalo[]): Intervalo[] => [...intervalos].sort((a, b) => a[0] - b[0])
+  // Os intervalos contam da saída; na linha do tempo eles começam em `desde`.
+  const naLinha = (intervalos: readonly Intervalo[]): Intervalo[] =>
+    [...intervalos].sort((a, b) => a[0] - b[0]).map(([de, ate]) => [desde + de, desde + ate] as const)
+  const mostrar = (conteudo: string, intervalos: readonly Intervalo[]): string =>
+    intervalos.length === 0 ? '' : janela(conteudo, naLinha(intervalos), duracao, false, inicio)
   const passada =
     `<g><animateTransform attributeName="transform" type="translate" values="${DENTRO};${FORA}" keyTimes="0;.5" ` +
     `calcMode="discrete" dur=".36s" repeatCount="indefinite"/>${quadro(poses.lado1, 0, 0)}</g>` +
     `<g transform="translate(${FORA})"><animateTransform attributeName="transform" type="translate" ` +
     `values="${FORA};${DENTRO}" keyTimes="0;.5" calcMode="discrete" dur=".36s" repeatCount="indefinite"/>` +
     `${quadro(poses.lado2, 0, 0)}</g>`
+  // Parado de lado ou sentado ele não usa os quadros da caminhada.
+  const fixo = passeio.parada === 'lado' ? poses.lado1 : passeio.parada === 'sentado' ? poses.sentado : null
+  const naPausa = tempos.pausa > 0 ? [parado] : []
   const corpo =
-    janela(
-      `<g>${alternar('scale', ordenar(paraDireita), '-1 1', '1 1', duracao, inicio)}${passada}</g>`,
-      ordenar(deLado),
-      duracao,
-      false,
-      inicio,
-    ) +
-    janela(balanco(quadro(poses.frente, 0, 0), 0, 0.36), ordenar(deFrente), duracao, false, inicio) +
-    (deCostas.length > 0
-      ? janela(balanco(quadro(poses.costas, 0, 0), 0, 0.36), ordenar(deCostas), duracao, false, inicio)
-      : '') +
-    janela(`<g transform="translate(16 -24)">${PAPEL}</g>`, [[0, tempos.ida]], duracao, false, inicio)
+    mostrar(`<g>${alternar('scale', naLinha(paraDireita), '-1 1', '1 1', duracao, inicio)}${passada}</g>`, deLado) +
+    mostrar(balanco(quadro(poses.frente, 0, 0), 0, 0.36), deFrente) +
+    mostrar(balanco(quadro(poses.costas, 0, 0), 0, 0.36), deCostas) +
+    (fixo === null
+      ? ''
+      : mostrar(`<g${passeio.espelhado ? ' transform="scale(-1 1)"' : ''}>${quadro(fixo, 0, 0)}</g>`, naPausa)) +
+    (passeio.naParada === ''
+      ? ''
+      : mostrar(
+          `<g transform="translate(10 ${n(-(fixo ?? poses.frente).a * U)})">${passeio.naParada}</g>`,
+          naPausa,
+        )) +
+    (passeio.naMao === '' ? '' : mostrar(`<g transform="translate(16 -24)">${passeio.naMao}</g>`, [passeio.comNaMao]))
   const origem = ida[0] as Ponto
 
   return janela(
     `<g transform="translate(${n(origem[0])} ${n(origem[1])})"><animateTransform attributeName="transform" ` +
       `type="translate" values="${pontos.map(ponto => `${n(ponto[0])} ${n(ponto[1])}`).join(';')}" ` +
       `keyTimes="${instantes.map((instante, i) => fracao(i === instantes.length - 1 ? 1 : instante / tempos.total)).join(';')}" ` +
-      `dur="${n(tempos.total)}s" ${inicio} fill="freeze"/>${corpo}</g>`,
-    [[0, tempos.total]],
+      `dur="${fracao(tempos.total)}s" ${comeco(passeio.decorrido - desde)} fill="freeze"/>${corpo}</g>`,
+    [[desde, desde + tempos.total]],
     duracao,
     false,
     inicio,
   )
+}
+
+// O passeio de quem está sem demanda, com o que acompanha cada rotina.
+function passeioDaRotina(rotina: Rotina, duracao: number, decorrido: number): string {
+  const total = rotina.ida * 2 + rotina.permanencia
+  const ida = trajetoDaRotina(rotina)
+  const chegada = ida[ida.length - 1] as Ponto
+  const parada = LUGARES[rotina.destino]?.pose ?? 'lado'
+  let naParada = ''
+
+  if (rotina.tipo === 'conversa') {
+    naParada = balaoDeConversa(0, false)
+  } else if (rotina.tipo === 'cochilo') {
+    naParada = sono()
+  } else if (rotina.tipo === 'descontracao' && parada === 'sentado') {
+    naParada = NOTA_DE_MUSICA
+  }
+
+  return caminhante({
+    id: rotina.agente,
+    ida,
+    tempos: { ida: rotina.ida, pausa: rotina.permanencia, volta: rotina.ida, total },
+    desde: rotina.atraso,
+    duracao,
+    decorrido,
+    parada,
+    // Quem conversa fica de lado, virado para o colega.
+    espelhado: rotina.tipo === 'conversa' && chegada[0] < AGENTES[rotina.destino as IdAgente].x,
+    naParada,
+    // A xícara vem do café até a mesa; quem deu meia-volta não chegou a pegá-la.
+    naMao: rotina.tipo === 'cafe' && rotina.alcance >= 1 ? XICARA : '',
+    comNaMao: [rotina.ida, total],
+  })
+}
+
+// O balãozinho do colega visitado, do lado oposto ao de quem o visita.
+function respostaDoColega(rotina: Rotina, duracao: number, inicio: string): string {
+  const colega = rotina.destino as IdAgente
+  const agente = AGENTES[colega]
+  const visitante = trajetoDaRotina(rotina)
+  const aEsquerda = (visitante[visitante.length - 1] as Ponto)[0] < agente.x
+  const x = aEsquerda ? agente.x + 24 : agente.x - 24
+  const chegada = rotina.atraso + rotina.ida
+
+  return janela(
+    `<g transform="translate(${n(x)} ${n(topoDaCabeca(colega) - 2)})">${balaoDeConversa(1, !aEsquerda)}</g>`,
+    [[chegada, chegada + rotina.permanencia]],
+    duracao,
+    false,
+    inicio,
+  )
+}
+
+// As rotinas que ainda não terminaram e a linha do tempo delas: a duração, o
+// quanto já passou (em segundos desde o início do período) e o `begin`.
+function rotinasEmCurso(
+  vida: Vida,
+  tempoDaVida: number,
+): { rotinas: Rotina[]; duracao: number; decorrido: number; inicio: string } {
+  const decorrido = Math.max(0, tempoDaVida)
+  const rotinas = vida.rotinas.filter(rotina => decorrido < fimDaRotina(rotina))
+
+  return {
+    rotinas,
+    duracao: Math.ceil(Math.max(0, ...rotinas.map(fimDaRotina))) + 1,
+    decorrido,
+    inicio: comeco(decorrido),
+  }
+}
+
+// Quem aparece trabalhando na cena e a partir de quantos segundos do passo.
+function trabalhoDaCena(cena: Cena, decorrido: number): { quem: IdAgente | null; desde: number } {
+  const passo = cena.passo
+
+  if (passo?.tipo === 'chegada' && decorrido < TEMPO_CHEGADA) {
+    return { quem: 'frank', desde: TEMPO_CHEGADA }
+  }
+
+  if (passo?.tipo === 'entrega' && decorrido < temposDaEntrega(passo.de, passo.para).total) {
+    return { quem: passo.para, desde: temposDaEntrega(passo.de, passo.para).ida }
+  }
+
+  if (passo?.tipo === 'conclusao' && decorrido < TEMPO_DO_SELO) {
+    return { quem: null, desde: 0 }
+  }
+
+  return { quem: cena.ativo ? cena.portador : null, desde: 0 }
 }
 
 const RAIZ =
@@ -419,19 +614,19 @@ export function montarFundo(): string {
   return `${RAIZ} style="background:${FUNDO_COR} url(${FUNDO_IMAGEM}) center/contain no-repeat"></svg>`
 }
 
-// A camada dos agentes para a cena, em desenho transparente. `decorrido` são
-// os segundos desde que o passo em cena começou: o desenho retoma a animação
-// daquele ponto e, se ela já acabou, mostra o estado final. `fala` é o texto
-// do balão de quem trabalha.
-export function montarCena(cena: Cena, tempo: number, fala: string | null): string {
+// A camada dos agentes para a cena, em desenho transparente. `tempo` são os
+// segundos desde que o passo em cena começou: o desenho retoma a animação
+// daquele ponto e, se ela já acabou, mostra o estado final. `vida` são as
+// rotinas de quem está sem demanda e `tempoDaVida`, os segundos desde que o
+// período delas começou: a cadeira de quem saiu fica vazia até ele voltar.
+export function montarCena(cena: Cena, tempo: number, vida: Vida, tempoDaVida: number): string {
   const decorrido = Math.max(0, tempo)
   const passo = cena.passo
   const inicio = comeco(decorrido)
   const personagens: string[] = []
   const camadas: string[] = []
+  const { quem: trabalhador, desde: trabalhaDesde } = trabalhoDaCena(cena, decorrido)
   let duracao = 1
-  let trabalhador: IdAgente | null = null
-  let trabalhaDesde = 0
   let ausente: IdAgente | null = null
   let voltaEm = 0
   let andando = ''
@@ -439,17 +634,25 @@ export function montarCena(cena: Cena, tempo: number, fala: string | null): stri
 
   if (passo?.tipo === 'chegada' && decorrido < TEMPO_CHEGADA) {
     duracao = TEMPO_CHEGADA + 1
-    trabalhador = 'frank'
-    trabalhaDesde = TEMPO_CHEGADA
     camadas.push(papelDeslizando([[-30, 372], [262, 372], AGENTES.frank.papelNaMesa], TEMPO_CHEGADA, inicio))
   } else if (passo?.tipo === 'entrega' && decorrido < temposDaEntrega(passo.de, passo.para).total) {
     const tempos = temposDaEntrega(passo.de, passo.para)
     duracao = tempos.total + 1
-    trabalhador = passo.para
-    trabalhaDesde = tempos.ida
     ausente = passo.de
     voltaEm = tempos.total
-    andando = caminhante(passo.de, rota(passo.de, passo.para), tempos, duracao, inicio)
+    andando = caminhante({
+      id: passo.de,
+      ida: rota(passo.de, passo.para),
+      tempos,
+      desde: 0,
+      duracao,
+      decorrido,
+      parada: 'frente',
+      espelhado: false,
+      naParada: '',
+      naMao: PAPEL,
+      comNaMao: [0, tempos.ida],
+    })
     camadas.push(janela(papelEm(AGENTES[passo.para].papelNaMesa), [[tempos.ida, SEMPRE]], duracao, true, inicio))
   } else if (passo?.tipo === 'conclusao' && decorrido < TEMPO_DO_SELO) {
     duracao = TEMPO_DO_SELO + 1
@@ -477,36 +680,75 @@ export function montarCena(cena: Cena, tempo: number, fala: string | null): stri
 
     if (cena.portador !== null) {
       camadas.push(papelEm(AGENTES[cena.portador].papelNaMesa))
-      trabalhador = cena.ativo ? cena.portador : null
     }
   }
+
+  // As rotinas que ainda não terminaram têm a própria linha do tempo, que
+  // conta do início do período. Quem passeia é desenhado na camada das
+  // rotinas; aqui só a cadeira dele fica vazia. Quem leva o papel não passeia.
+  const { rotinas, duracao: duracaoDaVida, inicio: inicioDaVida } = rotinasEmCurso(vida, tempoDaVida)
 
   const naOrdem = [...IDS].sort((a, b) => AGENTES[a].corte - AGENTES[b].corte)
 
   for (const id of naOrdem) {
+    const rotina = id === ausente ? undefined : rotinas.find(uma => uma.agente === id)
+    const corpo = sentado(id, id === trabalhador ? (animando ? trabalhaDesde - decorrido : 0) : null)
+
     if (id === ausente) {
       personagens.push(janela(sentado(id, null), [[voltaEm, SEMPRE]], duracao, true, inicio))
-    } else if (id === trabalhador) {
-      personagens.push(sentado(id, animando ? trabalhaDesde - decorrido : 0))
+    } else if (rotina !== undefined) {
+      // A cadeira fica vazia enquanto ele está fora.
+      const naCadeira: Intervalo[] = [
+        [0, rotina.atraso],
+        [fimDaRotina(rotina), SEMPRE],
+      ]
+      personagens.push(janela(corpo, naCadeira, duracaoDaVida, true, inicioDaVida))
     } else {
-      personagens.push(sentado(id, null))
+      personagens.push(corpo)
     }
   }
 
-  const destaque =
-    trabalhador === null
-      ? ''
-      : janela(
-          etiquetaDeDestaque(trabalhador) +
-            (fala === null ? balaoDePontos(trabalhador) : balaoDeFala(trabalhador, fala)),
-          [[trabalhaDesde, SEMPRE]],
-          duracao,
-          true,
-          inicio,
-        )
-
   return (
     `${RAIZ}><g fill="none" stroke-width="1.06">${personagens.join('')}${andando}</g>` +
-    `${camadas.join('')}${etiquetas()}${destaque}</svg>`
+    `${camadas.join('')}${etiquetas()}</svg>`
   )
+}
+
+// A camada das rotinas: quem está sem demanda passeando pelo escritório, em
+// desenho transparente. Fica separada da camada dos agentes para a demanda
+// poder mudar de mãos sem refazer quem está no meio do caminho. Sem ninguém
+// fora da cadeira não há desenho.
+export function montarVida(vida: Vida, tempoDaVida: number): string {
+  const { rotinas, duracao, inicio, decorrido } = rotinasEmCurso(vida, tempoDaVida)
+
+  if (rotinas.length === 0) {
+    return ''
+  }
+
+  const passeando = rotinas.map(rotina => passeioDaRotina(rotina, duracao, decorrido))
+  const respostas = rotinas
+    .filter(rotina => rotina.tipo === 'conversa' && rotina.alcance >= 1 && rotina.permanencia > 0)
+    .map(rotina => respostaDoColega(rotina, duracao, inicio))
+
+  return `${RAIZ}><g fill="none" stroke-width="1.06">${passeando.join('')}</g>${respostas.join('')}</svg>`
+}
+
+// A camada do balão: o destaque de quem trabalha e o que ele está fazendo, em
+// desenho transparente. Fica separada dos agentes para o texto poder trocar
+// sem refazer quem está andando. Se a demanda encontrou o agente fora da
+// cadeira, o balão espera ele voltar.
+export function montarFala(cena: Cena, tempo: number, fala: string | null, vida: Vida, tempoDaVida: number): string {
+  const decorrido = Math.max(0, tempo)
+  const { quem, desde } = trabalhoDaCena(cena, decorrido)
+
+  if (quem === null) {
+    return ''
+  }
+
+  const rotina = vida.rotinas.find(uma => uma.agente === quem)
+  const falta = rotina === undefined ? 0 : fimDaRotina(rotina) - Math.max(0, tempoDaVida)
+  const aparece = falta > 0 ? Math.max(desde, decorrido + falta) : desde
+  const destaque = etiquetaDeDestaque(quem) + (fala === null ? balaoDePontos(quem) : balaoDeFala(quem, fala))
+
+  return `${RAIZ}>${janela(destaque, [[aparece, SEMPRE]], Math.max(aparece, decorrido) + 1, true, comeco(decorrido))}</svg>`
 }
